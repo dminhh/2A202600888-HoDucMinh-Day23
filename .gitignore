@@ -39,3 +39,5 @@ Thumbs.db
 
 # Hidden grading — do NOT distribute to students
 data/grading/
+
+CLAUDE.md
