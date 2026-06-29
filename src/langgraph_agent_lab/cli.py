@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -38,8 +39,12 @@ def run_scenarios(
         unique_thread_id = f"{state['thread_id']}-{uuid.uuid4().hex[:8]}"
         state["thread_id"] = unique_thread_id
         run_config = {"configurable": {"thread_id": unique_thread_id}}
+        t0 = time.perf_counter()
         final_state = graph.invoke(state, config=run_config)
-        metrics.append(metric_from_state(final_state, scenario.expected_route.value, scenario.requires_approval))
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        m = metric_from_state(final_state, scenario.expected_route.value, scenario.requires_approval)
+        m.latency_ms = latency_ms
+        metrics.append(m)
         last_thread_cfg = run_config
 
     # Test crash-resume: read state history back from checkpointer
