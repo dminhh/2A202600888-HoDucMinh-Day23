@@ -74,15 +74,15 @@ Append-only fields use `Annotated[list, add]` — LangGraph merges them automati
 
 All 7 scenarios pass with **100% success rate**.
 
-| Scenario | Expected Route | Actual Route | Success | Nodes | Retries | Approval |
-|---|---|---|:---:|:---:|:---:|:---:|
-| S01_simple | simple | simple | ✓ | 4 | 0 | — |
-| S02_tool | tool | tool | ✓ | 6 | 0 | — |
-| S03_missing | missing_info | missing_info | ✓ | 4 | 0 | — |
-| S04_risky | risky | risky | ✓ | 8 | 0 | ✓ |
-| S05_error | error | error | ✓ | 10 | 2 | — |
-| S06_delete | risky | risky | ✓ | 8 | 0 | ✓ |
-| S07_dead_letter | error | error | ✓ | 5 | 1 | — |
+| Scenario | Expected Route | Actual Route | Success | Nodes | Retries | Approval | Latency |
+|---|---|---|:---:|:---:|:---:|:---:|---:|
+| S01_simple | simple | simple | ✓ | 4 | 0 | — | ~5400ms |
+| S02_tool | tool | tool | ✓ | 6 | 0 | — | ~2500ms |
+| S03_missing | missing_info | missing_info | ✓ | 4 | 0 | — | ~1200ms |
+| S04_risky | risky | risky | ✓ | 8 | 0 | ✓ | ~2600ms |
+| S05_error | error | error | ✓ | 10 | 2 | — | ~2600ms |
+| S06_delete | risky | risky | ✓ | 8 | 0 | ✓ | ~2500ms |
+| S07_dead_letter | error | error | ✓ | 5 | 1 | — | ~1100ms |
 
 **Summary** (`outputs/metrics.json`):
 
@@ -94,6 +94,8 @@ All 7 scenarios pass with **100% success rate**.
 | total_retries | 3 |
 | total_interrupts | 2 |
 | resume_success | true |
+
+**Latency notes**: S01 is slowest (~5400ms) as it's the first call initializing the LLM client connection. S03 and S07 are fastest (~1100ms) because they don't call `answer_node` (no second LLM call).
 
 ---
 
@@ -108,7 +110,7 @@ S07 sets `max_attempts=1` to simulate a completely unrecoverable failure:
 3. `route_after_retry`: `attempt (1) < max_attempts (1)` → **False** → `dead_letter`
 4. `dead_letter_node` sets `final_answer` with escalation message — no tool ever executes
 
-**Key design**: routing to `retry` before `tool` means the counter increments first. This correctly exhausts `max_attempts=1` immediately.
+**Key design**: routing to `retry` before `tool` means the counter increments first. This correctly exhausts `max_attempts=1` immediately without wasting a tool call.
 
 ### Failure Mode 2 — Transient Tool Error with Bounded Retry (S05)
 
@@ -147,13 +149,13 @@ return SqliteSaver(conn=conn)
 
 **Crash-resume demonstration**:
 ```
-Run 1: graph.invoke(state) → SQLite saves checkpoint per node → connection closed (crash)
+Run 1: graph.invoke(state) → SQLite saves checkpoint per node → connection closed
 Run 2: new SqliteSaver(conn) → graph.get_state_history(thread_cfg)
        → 12 checkpoints recovered
        → latest state: route="simple", final_answer present ✓
 ```
 
-`resume_success=true` is set in `metrics.json` when `get_state_history()` returns non-empty history after a fresh connection.
+`resume_success=true` is set in `metrics.json` when `get_state_history()` returns non-empty history after a fresh connection, proving state survives process termination.
 
 ---
 
@@ -167,6 +169,7 @@ Run 2: new SqliteSaver(conn) → graph.get_state_history(thread_cfg)
 - Unique `thread_id` per run prevents state bleed between runs
 - Crash-resume verified: close connection → reopen → `get_state_history()` returns full history
 - `resume_success=True` automatically detected and recorded in `metrics.json`
+- Real `latency_ms` measured with `time.perf_counter()` per scenario
 
 ---
 
@@ -178,6 +181,6 @@ Run 2: new SqliteSaver(conn) → graph.get_state_history(thread_cfg)
 
 3. **Parallel fan-out with `Send()`**: For queries requiring multiple lookups, dispatch concurrent tool calls using the `Send()` API and merge results — reduces latency from O(n) sequential to O(1) parallel.
 
-4. **`latency_ms` measurement**: Currently `0` in all metrics. Add `time.perf_counter()` around each `graph.invoke()` call to measure real end-to-end latency per scenario.
+4. **Time travel replay**: Use `graph.invoke(None, config={"configurable": {"checkpoint_id": ...}})` to re-run from any historical checkpoint — essential for debugging production failures without full re-execution.
 
-5. **Time travel replay**: Use `graph.invoke(None, config={"configurable": {"checkpoint_id": ...}})` to re-run from any historical checkpoint — essential for debugging production failures without full re-execution.
+5. **Postgres persistence**: Switch from SQLite to Postgres for production multi-process deployments where WAL-mode SQLite is insufficient.
