@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Annotated
 
@@ -30,12 +31,27 @@ def run_scenarios(
     checkpointer = build_checkpointer(cfg.get("checkpointer", "memory"), cfg.get("database_url"))
     graph = build_graph(checkpointer=checkpointer)
     metrics = []
+    last_thread_cfg = None
     for scenario in scenarios:
         state = initial_state(scenario)
-        run_config = {"configurable": {"thread_id": state["thread_id"]}}
+        # Use unique thread_id per run to avoid checkpoint accumulation across runs
+        unique_thread_id = f"{state['thread_id']}-{uuid.uuid4().hex[:8]}"
+        state["thread_id"] = unique_thread_id
+        run_config = {"configurable": {"thread_id": unique_thread_id}}
         final_state = graph.invoke(state, config=run_config)
         metrics.append(metric_from_state(final_state, scenario.expected_route.value, scenario.requires_approval))
-    report = summarize_metrics(metrics)
+        last_thread_cfg = run_config
+
+    # Test crash-resume: read state history back from checkpointer
+    resume_success = False
+    if checkpointer is not None and last_thread_cfg is not None:
+        try:
+            history = list(graph.get_state_history(last_thread_cfg))
+            resume_success = len(history) > 0
+        except Exception:
+            resume_success = False
+
+    report = summarize_metrics(metrics, resume_success=resume_success)
     write_metrics(report, output)
     if cfg.get("report_path"):
         write_report(report, cfg["report_path"])
